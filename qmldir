@@ -1,0 +1,2 @@
+singleton PhonePhotosStore 1.0 PhonePhotosStore.qml
+PhotoRow 1.0 PhotoRow.qml

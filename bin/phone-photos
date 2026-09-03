@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# phone-photos: read the Syncthing photo folder for the bar widget, with a ceiling.
+#
+# The folder is filled by Syncthing from a phone, and while it is transferring a
+# file it appears alongside the final name as `.syncthing.<name>.tmp`, then gets
+# renamed once complete. The folder also carries `.stfolder` (Syncthing's marker).
+# None of those are photos anyone wants in the list.
+#
+# FolderListModel reads a directory by enumerating all of it, stat-ing every
+# entry and sorting the lot, and only then can QML see a count. On a camera roll
+# that has grown over years, or one just filled by a big initial sync, that whole
+# walk lands on the UI thread of a shell that never restarts.
+#
+# So the size of the folder is decided here, before anything expensive is allowed
+# to happen, and the expensive read itself runs in this short-lived process
+# rather than in the shell. Same shape as the downloads plugin's helper.
+#
+#   probe DIR   how many entries, counted no further than the cap and without
+#               stat-ing anything. This is what tells QML whether attaching
+#               the model is safe.
+#   list DIR    the newest photos as JSON, bounded by entries and by rows.
+
+set -uo pipefail
+
+die() { printf '{"ok":false,"error":%s}\n' "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"; exit 0; }
+
+readonly PROBE_CAP=2000
+readonly SCAN_CAP=5000
+readonly ROW_CAP=200
+
+valid_dir() {
+  local d=$1
+  [[ $d == /* ]] || return 1
+  [[ -d $d ]] || return 1
+  [[ ! -L $d ]] || return 1
+  return 0
+}
+
+cmd_probe() {
+  local dir=$1 n
+  valid_dir "$dir" || die "not a directory"
+  n=$(ls -U -A -- "$dir" 2>/dev/null | head -n "$((PROBE_CAP + 1))" | wc -l)
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+  if (( n > PROBE_CAP )); then
+    printf '{"ok":true,"entries":%s,"over":true}\n' "$PROBE_CAP"
+  else
+    printf '{"ok":true,"entries":%s,"over":false}\n' "$n"
+  fi
+}
+
+cmd_list() {
+  local dir=$1
+  valid_dir "$dir" || die "not a directory"
+  DL_SCAN_CAP=$SCAN_CAP DL_ROW_CAP=$ROW_CAP python3 - "$dir" <<'PY'
+import json, os, sys
+
+directory = sys.argv[1]
+scan_cap = int(os.environ["DL_SCAN_CAP"])
+row_cap = int(os.environ["DL_ROW_CAP"])
+
+# Photos and videos only, as far as the extension can say. Syncthing temp files
+# and its marker are hidden and never considered; anything else that is not a
+# known media extension (like a stray Sidecar or .nomedia) is skipped too.
+MEDIA_EXTS = {
+  "jpg","jpeg","png","gif","webp","bmp","heic","heif","tiff","tif","avif","svg",
+  "mp4","m4v","mov","mkv","webm","avi","3gp",
+}
+
+def is_photo(name):
+    if name.startswith("."):
+        return False
+    dot = name.rfind(".")
+    if dot <= 0:
+        return False
+    return name[dot+1:].lower() in MEDIA_EXTS
+
+rows = []
+scanned = 0
+truncated = False
+
+try:
+    with os.scandir(directory) as it:
+        for entry in it:
+            if scanned >= scan_cap:
+                truncated = True
+                break
+            scanned += 1
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if not is_photo(entry.name):
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            rows.append((stat.st_mtime, stat.st_size, entry.name))
+except OSError as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}))
+    sys.exit(0)
+
+# Newest first, which is the order the window wants: the photo you just shot is
+# the one you came for.
+rows.sort(key=lambda r: r[0], reverse=True)
+hidden = max(0, len(rows) - row_cap)
+rows = rows[:row_cap]
+
+files = [
+    {
+        "name": name,
+        "path": os.path.join(directory, name),
+        "size": size,
+        "modified": int(mtime * 1000),
+    }
+    for (mtime, size, name) in rows
+]
+
+print(json.dumps({
+    "ok": True,
+    "files": files,
+    "hidden": hidden,
+    "scanned": scanned,
+    "truncated": truncated,
+}, ensure_ascii=False))
+PY
+}
+
+# Where the "last seen" marker lives. A small state file, so the badge survives
+# shell restarts: the newest photo already looked at stays looked at.
+state_dir() { printf '%s/.config/omarchy-phone-photos' "${HOME:-}"; }
+marker_file() { printf '%s/seen.txt' "$(state_dir)"; }
+
+cmd_getmark() {
+  local f
+  f=$(marker_file)
+  if [[ -f $f ]] && [[ -r $f ]]; then
+    printf '{"ok":true,"marker":%s}\n' "$(cat -- "$f")"
+  else
+    printf '{"ok":true,"marker":null}\n'
+  fi
+}
+
+cmd_mark() {
+  local ts=$1 dir f
+  # A timestamp only: in the shell a long int is easy to forge and cheap to
+  # accept, but a path or a flag is not a number and gets refused.
+  [[ $ts =~ ^[0-9]+$ ]] || die "bad timestamp"
+  dir=$(state_dir)
+  mkdir -p -- "$dir" || die "cannot create state dir"
+  f=$(marker_file)
+  printf '%s\n' "$ts" > "$f" || die "cannot write marker"
+  printf '{"ok":true,"marker":%s}\n' "$ts"
+}
+
+# Ask Syncthing to scan this folder now. Reads the GUI API key from Syncthing's
+# own config (the shell must never bake that secret in), then POSTs a scan
+# request for the phone-camera folder so the hourly rescan is not the only path
+# new photos take. The widget calls this from its sync button.
+syncthing_conf() { printf '%s/.local/state/syncthing/config.xml' "${HOME:-}"; }
+
+cmd_scan() {
+  local conf key code
+  conf=$(syncthing_conf)
+  [[ -f $conf ]] && [[ -r $conf ]] || die "no syncthing config"
+  key=$(sed -n 's:.*<apikey>\([^<]*\)</apikey>.*:\1:p' "$conf" | head -n 1)
+  [[ -n $key ]] || die "no api key"
+  code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X POST -H "X-API-Key: $key" \
+    "http://127.0.0.1:8384/rest/db/scan?folder=phone-camera" 2>/dev/null)
+  case "$code" in
+    200) printf '{"ok":true}\n' ;;
+    *)   die "scan failed (http $code)" ;;
+  esac
+}
+
+case "${1:-}" in
+  probe)   shift; cmd_probe "${1:-}" ;;
+  list)    shift; cmd_list "${1:-}" ;;
+  getmark) cmd_getmark ;;
+  mark)    shift; cmd_mark "${1:-}" ;;
+  scan)    shift; cmd_scan ;;
+  *) die "usage: phone-photos probe|list DIR | getmark | mark TIMESTAMP | scan" ;;
+esac

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "rob.phone-photos",
+  "name": "Phone Photos",
+  "version": "1.0.0",
+  "author": "Rob",
+  "description": "Recent photos synced from your phone via Syncthing, in a window you can drag files out of",
+  "homepage": "",
+  "license": "MIT",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Phone Photos",
+    "description": "Recent photos synced from your phone via Syncthing, in a window you can drag files out of",
+    "category": "Apps",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

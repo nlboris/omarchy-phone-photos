@@ -1,0 +1,9 @@
+# Editor / OS cruft
+.editorconfig.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# State written at runtime lives outside the repo (under ~/.config/omarchy-phone-photos);
+# nothing in-tree should be generated.
