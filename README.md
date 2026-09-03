@@ -162,6 +162,11 @@ makes no network requests of its own. Filenames are rendered as `Text.PlainText`
 throughout, so a file named to look like markup cannot make the shell fetch a
 remote image.
 
+## Acknowledgements
+
+This widget was built with [opencode](https://opencode.ai), an open-source AI
+coding assistant, under Rob's direction.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
