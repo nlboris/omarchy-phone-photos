@@ -2,10 +2,9 @@
 
 ![Phone Photos](assets/phone-photos.png)
 
-Recent photos and videos that have travelled from your phone to this machine,
-one click from the Omarchy bar — and every row is a drag handle, so a file goes
-straight into the upload field, chat window, file manager, or editor that needs
-it.
+Your phone's latest photos and videos, one click away on the bar. Every row is
+a drag handle, so a file goes straight into the upload field, chat window, file
+manager, or editor that needs it.
 
 The files are brought over by **Syncthing** from a phone (this was written for
 a Samsung, but any Syncthing-capable phone works). The bar button carries a
