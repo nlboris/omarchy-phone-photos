@@ -24,7 +24,13 @@ The sync is one-way and safe by construction:
 | Side | Folder type | Why |
 |---|---|---|
 | Phone | **Send Only** | The phone is the source of truth |
-| This machine | **Receive Only** + **Ignore Delete** | Nothing on the PC can damage the phone, and deleting a photo on the phone does not delete your local copy |
+| This machine | **Receive Only** | Nothing on the PC can damage the phone |
+
+**Ignore Delete is off** (Syncthing's default). Deleting a photo on the phone
+therefore also deletes your copy here. If you would rather keep a copy after
+deleting on the phone you can tick **Ignore Delete** in the PC folder's
+settings — but be aware each filtered deletion keeps the phone folder out of a
+clean sync state (see [Troubleshooting](#troubleshooting--sync-hygiene)).
 
 ## Installing
 
@@ -57,7 +63,8 @@ On your phone, install **Syncthing-Fork** (Play Store or F-Droid), then:
    - **Folder type:** Send Only
    - Share it with your PC.
 3. On the PC web UI, accept the folder and point it at `~/Pictures/Phone`,
-   folder type **Receive Only**, with **Ignore Delete** on.
+   folder type **Receive Only** (tick **Ignore Delete** only if you want
+   deletions on the phone to keep a copy here — see the note above).
 4. Set the widget to watch the camera subfolder in
    `~/.config/omarchy/shell.json`:
 
@@ -111,10 +118,11 @@ The badge counts files that are newer than the last time you opened the widget
 or the folder, and that count persists across shell restarts — files you have
 already seen stay seen.
 
-New files are picked up on the folder's **hourly** rescan (with the Syncthing
-filesystem watcher off). If you have just taken something, hit the **sync
-icon** in the header to bring it in immediately instead of waiting for the
-hour.
+New files are picked up **instantly** when the footer toggle *Instant sync
+(watch for new photos)* is on — it flips on Syncthing's filesystem watcher for
+the folder. With that toggle off (the default) files arrive on the folder's
+**hourly** rescan, so if you have just taken something, hit the **sync icon**
+in the header to bring it in immediately instead of waiting for the hour.
 
 ## Settings
 
@@ -139,6 +147,58 @@ Set these on the plugin's entry in `~/.config/omarchy/shell.json`:
   files newer than when you last opened the widget or the folder.
 - **It reads, it never uploads.** Anything you want in Google Photos still goes
   through the Google Photos app on the phone.
+
+## Troubleshooting & sync hygiene
+
+Things learned the hard way, so you do not have to repeat the unforgiving
+version.
+
+### Amber folder switch next to "If untrusted, enter encryption password"
+
+On the phone's **Devices** tab, a folder shared with a *trusted* device and no
+encryption password shows an amber switch with that caption. This is an
+**informational label**, not an error: it means the folder is synced in
+plaintext (still TLS-encrypted in transit, but readable at rest on the PC).
+There is nothing to fix; it stays amber by design. Making it "go away" would
+mean marking the PC untrusted and adding an encryption password, which would
+make the photos unreadable here.
+
+### Phone reports "Up to date" but shows 98% / amber
+
+If the PC side is genuinely clean (folder *idle*, `needFiles 0`,
+`receiveOnlyChangedFiles 0`), a phone stuck on 98% with an amber Devices-tab
+switch is a cosmetic/stale display. Force a rescan from the folder menu or
+restart the app; the percentages do not track anything functional in that
+case.
+
+Two real causes produce an amber/98% that *is* actionable:
+
+- **PC has Ignore Delete on.** Deletes on the phone become undeliverable to a
+  receive-only PC, so the phone never reaches "fully synced". Untick the box
+  (or keep it and accept the phone will show out of sync after each
+  deletion).
+- **Files edited on the PC.** Editing inside `~/Pictures/Phone` (rotating in
+  `imv` with `Ctrl-R`, etc.) marks files as `receiveOnlyChanged`: they are
+  local edits a receive-only folder cannot send back. The folder turns amber
+  and never completes until the edits are gone.
+
+### Fixing local edits in a receive-only folder
+
+`revert` throws away the local differences and brings the folder back to the
+phone's version. It is destructive to those edits — copy them somewhere else
+first if you want to keep them:
+
+```bash
+API_KEY=$(grep -oP '(?<=<apikey>).*?(?=</apikey>)' \
+    ~/.local/state/syncthing/config.xml)
+curl -X POST -H "X-API-Key: $API_KEY" \
+    'http://127.0.0.1:8384/rest/db/revert?folder=phone-camera'
+```
+
+Check the change before and after with the web UI: *Out of sync / Out of
+sync items* should drop to zero. If you *want* local edits (thumbnails,
+rotation, captions) to propagate back to the phone, change the PC folder to
+**Send & Receive** instead.
 
 ## Removing it
 

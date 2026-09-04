@@ -157,12 +157,20 @@ cmd_mark() {
 # new photos take. The widget calls this from its sync button.
 syncthing_conf() { printf '%s/.local/state/syncthing/config.xml' "${HOME:-}"; }
 
-cmd_scan() {
-  local conf key code
+# The GUI API key for the local Syncthing instance, read from its own config so
+# the shell never bakes the secret in. Shared by scan() and watcher().
+st_key() {
+  local conf
   conf=$(syncthing_conf)
   [[ -f $conf ]] && [[ -r $conf ]] || die "no syncthing config"
   key=$(sed -n 's:.*<apikey>\([^<]*\)</apikey>.*:\1:p' "$conf" | head -n 1)
   [[ -n $key ]] || die "no api key"
+  printf '%s' "$key"
+}
+
+cmd_scan() {
+  local key code
+  key=$(st_key)
   code=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST -H "X-API-Key: $key" \
     "http://127.0.0.1:8384/rest/db/scan?folder=phone-camera" 2>/dev/null)
@@ -172,11 +180,32 @@ cmd_scan() {
   esac
 }
 
+# Read or set the folder's filesystem-watcher flag. With it on, Syncthing reacts
+# to new files arriving instantly; off, it waits for the hourly rescan. The
+# widget's toggle at the foot of the panel drives this.
+cmd_watcher() {
+  local key code want current body
+  key=$(st_key)
+  want=$1
+  if [[ $want == on || $want == off ]]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH \
+      -H "X-API-Key: $key" -H "Content-Type: application/json" \
+      -d "{\"fsWatcherEnabled\": $([ $want = on ] && printf true || printf false)}" \
+      "http://127.0.0.1:8384/rest/config/folders/phone-camera")
+    [[ $code == 200 ]] || die "watcher set failed (http $code)"
+  fi
+  current=$(curl -s -H "X-API-Key: $key" \
+    "http://127.0.0.1:8384/rest/config/folders/phone-camera" \
+    | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("fsWatcherEnabled") else "false")')
+  printf '{"ok":true,"watcher":%s}\n' "$([ "$current" = true ] && printf true || printf false)"
+}
+
 case "${1:-}" in
   probe)   shift; cmd_probe "${1:-}" ;;
   list)    shift; cmd_list "${1:-}" ;;
   getmark) cmd_getmark ;;
   mark)    shift; cmd_mark "${1:-}" ;;
   scan)    shift; cmd_scan ;;
-  *) die "usage: phone-photos probe|list DIR | getmark | mark TIMESTAMP | scan" ;;
+  watcher) shift; cmd_watcher "${1:-}" ;;
+  *) die "usage: phone-photos probe|list DIR | getmark | mark TIMESTAMP | scan [folder] | watcher [on|off]" ;;
 esac

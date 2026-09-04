@@ -92,6 +92,12 @@ Singleton {
   // True while a manual rescan request to Syncthing is in flight, so the sync
   // button can show it is working (and ignore extra clicks).
   property bool syncing: false
+  // Instant-sync toggle state: whether the PC folder's filesystem watcher is
+  // on. On, a new photo on the phone shows up by itself within moments; off,
+  // it waits for the hourly rescan or the sync button. This mirrors the
+  // Syncthing `fsWatcherEnabled` flag the toggle flips.
+  property bool watcherEnabled: false
+  property bool watcherBusy: false
 
   property int maxRows: 200
 
@@ -390,6 +396,16 @@ Singleton {
     syncProc.running = true
   }
 
+  // Toggle the folder's filesystem watcher. The helper reads the current value
+  // after applying the change; its output is what sets watcherEnabled, so the
+  // knob always mirrors the real Syncthing flag rather than an optimistic guess.
+  function setWatcher(want) {
+    if (root.watcherBusy) return
+    root.watcherBusy = true
+    watcherProc.command = [root.helper, "watcher", want]
+    watcherProc.running = true
+  }
+
   readonly property string helper:
     Qt.resolvedUrl("bin/phone-photos").toString().replace(/^file:\/\//, "")
 
@@ -407,6 +423,16 @@ Singleton {
   Component.onCompleted: {
     root.rescan()
     root.loadMarker()
+    root.loadWatcher()
+  }
+
+  // Read the current filesystem-watcher flag from Syncthing so the toggle shows
+  // the real state when the panel opens. GET only: no arg to the helper.
+  function loadWatcher() {
+    if (root.watcherBusy) return
+    root.watcherBusy = true
+    watcherProc.command = [root.helper, "watcher"]
+    watcherProc.running = true
   }
 
   function loadMarker() {
@@ -445,6 +471,23 @@ Singleton {
       onStreamFinished: {
         root.syncing = false
         root.rescan()
+      }
+    }
+  }
+
+  // Instant-sync toggle: reports and flips the folder's filesystem watcher.
+  // Mirrors `syncing` in that the knob only settles once Syncthing confirms the
+  // change, enforcing the caller-owns-the-value contract of ToggleSwitch.
+  Process {
+    id: watcherProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.watcherBusy = false
+        try {
+          root.watcherEnabled = JSON.parse(text).watcher === true
+        } catch (_) {
+          root.watcherEnabled = false
+        }
       }
     }
   }
@@ -631,6 +674,38 @@ Singleton {
           font.pixelSize: Style.font.caption
           renderType: Text.NativeRendering
           color: Util.alpha(Color.foreground, 0.6)
+        }
+
+        Rectangle {
+          Layout.fillWidth: true
+          height: Style.spacing.hairline
+          color: Color.popups.border
+        }
+
+        // Instant sync: controlling the PC folder's filesystem watcher. On,
+        // fresh phone photos surface by themselves within moments; off, they
+        // wait for the hourly rescan or the Sync now button.
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: "Instant sync (watch for new photos)"
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            renderType: Text.NativeRendering
+            color: Util.alpha(Color.foreground, 0.8)
+            verticalAlignment: Text.AlignVCenter
+          }
+
+          ToggleSwitch {
+            checked: root.watcherEnabled
+            busy: root.watcherBusy
+            Layout.alignment: Qt.AlignVCenter
+            onToggled: root.setWatcher(root.watcherEnabled ? "off" : "on")
+          }
         }
       }
     }
